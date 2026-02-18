@@ -1,3 +1,9 @@
+# vscode
+.vscode/
+
+# local
+models/*.task
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
