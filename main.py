@@ -171,7 +171,7 @@ while True:
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
 
     cv2.imshow("MediaPipe Gesture Recognizer", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) & 0xFF == 27:
         break
 
 cap.release()
