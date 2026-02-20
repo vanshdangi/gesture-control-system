@@ -2,32 +2,32 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
+from collections import deque
 import urllib.request
 import os
 
 MODEL_PATH = "models/gesture_recognizer.task"
 
-# ── MediaPipe setup ────────────────────────────────────────
+# MediaPipe setup
 BaseOptions           = mp.tasks.BaseOptions
 GestureRecognizer     = mp.tasks.vision.GestureRecognizer
 GestureRecognizerOpts = mp.tasks.vision.GestureRecognizerOptions
 RunningMode           = mp.tasks.vision.RunningMode
 
-# ── Gesture display map ────────────────────────────────────
-# All 8 supported gestures with emoji + color (BGR)
+# Gestures Map
 GESTURE_INFO = {
-    "None":        ("·  None",         (120, 120, 120)),
-    "Unknown":     ("?  Unknown",      (100, 100, 100)),
-    "Closed_Fist": ("✊  Closed Fist",  (0,   140, 255)),
-    "Open_Palm":   ("🖐  Open Palm",    (0,   220, 120)),
-    "Pointing_Up": ("☝  Pointing Up",  (255, 220,   0)),
-    "Thumb_Down":  ("👎  Thumb Down",   (0,    60, 220)),
-    "Thumb_Up":    ("👍  Thumb Up",     (0,   255, 100)),
-    "Victory":     ("✌  Victory",      (200,   0, 255)),
-    "ILoveYou":    ("🤟  I Love You",   (255,  80,   0)),
+    "None":        ("Idle",            (150, 150, 150)),
+    "Unknown":     ("Unrecognized",    (110, 110, 110)),
+    "Closed_Fist": ("Grip",            (255, 120, 0)),      # Deep Orange
+    "Open_Palm":   ("Open Hand",       (0, 200, 120)),      # Emerald Green
+    "Pointing_Up": ("Point",           (0, 220, 255)),      # Cyan
+    "Thumb_Down":  ("Dislike",         (0, 80, 220)),       # Red-Blue
+    "Thumb_Up":    ("Approve",         (0, 255, 150)),      # Mint
+    "Victory":     ("Victory",         (200, 0, 255)),      # Magenta
+    "ILoveYou":    ("I Love You",      (255, 60, 120)),     # Pink Accent
 }
 
-# ── Hand skeleton connections ──────────────────────────────
+# Hand skeleton connections
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),
     (0,5),(5,6),(6,7),(7,8),
@@ -38,13 +38,13 @@ HAND_CONNECTIONS = [
 ]
 FINGER_TIPS = {4, 8, 12, 16, 20}
 
-# ── Async result store ─────────────────────────────────────
+#  Async result store
 latest = {"result": None}
 
 def on_result(result, output_image, timestamp_ms):
     latest["result"] = result
 
-# ── Build recognizer ───────────────────────────────────────
+# Build recognizer
 options = GestureRecognizerOpts(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     running_mode=RunningMode.LIVE_STREAM,
@@ -56,7 +56,7 @@ options = GestureRecognizerOpts(
 )
 recognizer = GestureRecognizer.create_from_options(options)
 
-# ── Drawing helpers ────────────────────────────────────────
+# Drawing helpers
 def to_pixels(hand_landmarks, frame_shape):
     h, w = frame_shape[:2]
     lm = np.array([[p.x * w, p.y * h] for p in hand_landmarks])
@@ -72,7 +72,6 @@ def draw_hand(frame, coords, accent_color):
         cv2.circle(frame, (x, y), radius, color, cv2.FILLED)
 
 def draw_label_box(frame, text, color, coords, hand_idx):
-    """Draw a rounded label near the wrist of each hand."""
     wrist = coords[0]
     x = max(wrist[0] - 10, 10)
     y = max(wrist[1] + 55, 55)
@@ -82,18 +81,17 @@ def draw_label_box(frame, text, color, coords, hand_idx):
     pad = 10
     overlay = frame.copy()
     cv2.rectangle(overlay, (x - pad, y - th - pad), (x + tw + pad, y + pad),
-                  (20, 20, 20), -1)
+                (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
     # Colored accent line above text
     cv2.rectangle(frame, (x - pad, y - th - pad), (x + tw + pad, y - th - 4),
-                  color, -1)
+                color, -1)
 
     cv2.putText(frame, text, (x, y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2, cv2.LINE_AA)
 
 def draw_legend(frame):
-    """Small gesture reference panel in top-right corner."""
     h, w = frame.shape[:2]
     entries = [v for k, v in GESTURE_INFO.items() if k not in ("None", "Unknown")]
     panel_w, line_h = 230, 26
@@ -113,12 +111,13 @@ def draw_legend(frame):
         cv2.putText(frame, label, (x0 + 24, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1)
 
-# ── Main loop ──────────────────────────────────────────────
+# Main loop
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 timestamp_ms = 0
+fps_buffer   = deque(maxlen=30)  # average over last 30 frames
 prev_time    = time.time()
 
 print("Gesture recognizer running — press Q to quit")
@@ -140,7 +139,7 @@ while True:
     if result and result.hand_landmarks:
         for idx, hand_lms in enumerate(result.hand_landmarks):
 
-            # ── Get gesture name + confidence ──
+            # Get gesture name + confidence
             gesture_name = "None"
             confidence   = 0.0
             if result.gestures and idx < len(result.gestures):
@@ -152,22 +151,28 @@ while True:
                 gesture_name, (gesture_name, (200, 200, 200))
             )
 
-            # ── Draw skeleton in gesture color ──
+            # Draw skeleton in gesture color
             coords = to_pixels(hand_lms, frame.shape)
             draw_hand(frame, coords, accent_color)
 
-            # ── Draw gesture label near wrist ──
+            # Draw gesture label near wrist
             handedness = result.handedness[idx][0].display_name
             display    = f"{label_text}  {confidence:.0%}"
             draw_label_box(frame, display, accent_color, coords, idx)
 
-    # ── Legend + FPS ───────────────────────────────────────
+    # Legend + FPS
     draw_legend(frame)
 
-    now       = time.time()
-    fps       = 1 / (now - prev_time + 1e-9)
+    now = time.time()
+    frame_time = now - prev_time
     prev_time = now
-    cv2.putText(frame, f"FPS: {int(fps)}", (10, 40),
+
+    instant_fps = 1.0 / (frame_time + 1e-9)
+    fps_buffer.append(instant_fps)
+
+    stable_fps = sum(fps_buffer) / len(fps_buffer)
+
+    cv2.putText(frame, f"FPS: {int(stable_fps)}", (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
 
     cv2.imshow("MediaPipe Gesture Recognizer", frame)
