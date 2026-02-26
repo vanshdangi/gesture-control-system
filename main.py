@@ -3,31 +3,33 @@ import mediapipe as mp
 import numpy as np
 import time
 from collections import deque
-import urllib.request
 import os
+import pyautogui
 
 MODEL_PATH = "models/gesture_recognizer.task"
 
-# MediaPipe setup
+pyautogui.FAILSAFE = True
+
+# ── MediaPipe setup ─────────────────────────────────────────
 BaseOptions           = mp.tasks.BaseOptions
 GestureRecognizer     = mp.tasks.vision.GestureRecognizer
 GestureRecognizerOpts = mp.tasks.vision.GestureRecognizerOptions
 RunningMode           = mp.tasks.vision.RunningMode
 
-# Gestures Map
+# ── Gestures Map ────────────────────────────────────────────
 GESTURE_INFO = {
     "None":        ("Idle",            (150, 150, 150)),
     "Unknown":     ("Unrecognized",    (110, 110, 110)),
-    "Closed_Fist": ("Grip",            (255, 120, 0)),      # Deep Orange
-    "Open_Palm":   ("Open Hand",       (0, 200, 120)),      # Emerald Green
-    "Pointing_Up": ("Point",           (0, 220, 255)),      # Cyan
-    "Thumb_Down":  ("Dislike",         (0, 80, 220)),       # Red-Blue
-    "Thumb_Up":    ("Approve",         (0, 255, 150)),      # Mint
-    "Victory":     ("Victory",         (200, 0, 255)),      # Magenta
-    "ILoveYou":    ("I Love You",      (255, 60, 120)),     # Pink Accent
+    "Closed_Fist": ("Click",           (255, 120, 0)),
+    "Open_Palm":   ("Open Hand",       (0, 200, 120)),
+    "Pointing_Up": ("Move Cursor",     (0, 220, 255)),
+    "Thumb_Down":  ("Vol -",           (0, 80, 220)),
+    "Thumb_Up":    ("Vol +",           (0, 255, 150)),
+    "Victory":     ("Alt Tab",         (200, 0, 255)),
+    "ILoveYou":    ("Exit",            (255, 60, 120)),
 }
 
-# Hand skeleton connections
+# ── Hand skeleton ───────────────────────────────────────────
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),
     (0,5),(5,6),(6,7),(7,8),
@@ -38,17 +40,17 @@ HAND_CONNECTIONS = [
 ]
 FINGER_TIPS = {4, 8, 12, 16, 20}
 
-#  Async result store
+# ── Async result store ──────────────────────────────────────
 latest = {"result": None}
 
 def on_result(result, output_image, timestamp_ms):
     latest["result"] = result
 
-# Build recognizer
+# ── Build recognizer ────────────────────────────────────────
 options = GestureRecognizerOpts(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     running_mode=RunningMode.LIVE_STREAM,
-    num_hands=2,
+    num_hands=1,
     min_hand_detection_confidence=0.6,
     min_hand_presence_confidence=0.6,
     min_tracking_confidence=0.5,
@@ -56,7 +58,7 @@ options = GestureRecognizerOpts(
 )
 recognizer = GestureRecognizer.create_from_options(options)
 
-# Drawing helpers
+# ── Drawing helpers ─────────────────────────────────────────
 def to_pixels(hand_landmarks, frame_shape):
     h, w = frame_shape[:2]
     lm = np.array([[p.x * w, p.y * h] for p in hand_landmarks])
@@ -66,116 +68,107 @@ def draw_hand(frame, coords, accent_color):
     for a, b in HAND_CONNECTIONS:
         cv2.line(frame, tuple(coords[a]), tuple(coords[b]), accent_color, 2)
     for i, (x, y) in enumerate(coords):
-        is_tip  = i in FINGER_TIPS
-        color   = accent_color if is_tip else (240, 240, 240)
-        radius  = 9 if is_tip else 5
+        radius = 8 if i in FINGER_TIPS else 5
+        color  = accent_color if i in FINGER_TIPS else (230, 230, 230)
         cv2.circle(frame, (x, y), radius, color, cv2.FILLED)
 
-def draw_label_box(frame, text, color, coords, hand_idx):
-    wrist = coords[0]
-    x = max(wrist[0] - 10, 10)
-    y = max(wrist[1] + 55, 55)
+def draw_label(frame, text, color, coords):
+    x, y = coords[0]
+    cv2.putText(frame, text, (x + 10, y + 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2)
 
-    # Background pill
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.85, 2)
-    pad = 10
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x - pad, y - th - pad), (x + tw + pad, y + pad),
-                (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+# ── Gesture action logic ────────────────────────────────────
+ACTION_COOLDOWN = 0.6
+last_action_time = {}
 
-    # Colored accent line above text
-    cv2.rectangle(frame, (x - pad, y - th - pad), (x + tw + pad, y - th - 4),
-                color, -1)
+def can_trigger(gesture):
+    now = time.time()
+    last = last_action_time.get(gesture, 0)
+    if now - last > ACTION_COOLDOWN:
+        last_action_time[gesture] = now
+        return True
+    return False
 
-    cv2.putText(frame, text, (x, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2, cv2.LINE_AA)
+def handle_gesture_action(gesture, coords, frame_shape):
+    if not can_trigger(gesture):
+        return
 
-def draw_legend(frame):
-    h, w = frame.shape[:2]
-    entries = [v for k, v in GESTURE_INFO.items() if k not in ("None", "Unknown")]
-    panel_w, line_h = 230, 26
-    panel_h = len(entries) * line_h + 20
-    x0, y0 = w - panel_w - 10, 10
+    if gesture == "Closed_Fist":
+        pyautogui.click()
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+    elif gesture == "Pointing_Up":
+        tip = coords[8]
+        h, w = frame_shape[:2]
+        screen_w, screen_h = pyautogui.size()
 
-    cv2.putText(frame, "Gestures", (x0 + 8, y0 + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        x = np.interp(tip[0], [0, w], [0, screen_w])
+        y = np.interp(tip[1], [0, h], [0, screen_h])
 
-    for i, (label, color) in enumerate(entries):
-        y = y0 + 20 + (i + 1) * line_h
-        cv2.circle(frame, (x0 + 12, y - 5), 5, color, -1)
-        cv2.putText(frame, label, (x0 + 24, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1)
+        pyautogui.moveTo(x, y, duration=0.05)
 
-# Main loop
+    elif gesture == "Thumb_Up":
+        pyautogui.press("volumeup")
+
+    elif gesture == "Thumb_Down":
+        pyautogui.press("volumedown")
+
+    elif gesture == "Victory":
+        pyautogui.hotkey("alt", "tab")
+
+    elif gesture == "ILoveYou":
+        print("Exit gesture detected")
+        os._exit(0)
+
+# ── Main loop ───────────────────────────────────────────────
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 timestamp_ms = 0
-fps_buffer   = deque(maxlen=30)  # average over last 30 frames
-prev_time    = time.time()
+fps_buffer = deque(maxlen=30)
+prev_time = time.time()
 
-print("Gesture recognizer running — press Q to quit")
-print("Supported: Closed_Fist | Open_Palm | Pointing_Up | Thumb_Down | Thumb_Up | Victory | ILoveYou")
+print("Gesture control active — ESC to quit")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    frame     = cv2.flip(frame, 1)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame = cv2.flip(frame, 1)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     timestamp_ms += 1
     recognizer.recognize_async(mp_image, timestamp_ms)
 
     result = latest["result"]
     if result and result.hand_landmarks:
-        for idx, hand_lms in enumerate(result.hand_landmarks):
+        hand_lms = result.hand_landmarks[0]
 
-            # Get gesture name + confidence
-            gesture_name = "None"
-            confidence   = 0.0
-            if result.gestures and idx < len(result.gestures):
-                top = result.gestures[idx][0]
-                gesture_name = top.category_name
-                confidence   = top.score
+        gesture = "None"
+        confidence = 0.0
+        if result.gestures:
+            top = result.gestures[0][0]
+            gesture = top.category_name
+            confidence = top.score
 
-            label_text, accent_color = GESTURE_INFO.get(
-                gesture_name, (gesture_name, (200, 200, 200))
-            )
+        label, color = GESTURE_INFO.get(gesture, (gesture, (200, 200, 200)))
+        coords = to_pixels(hand_lms, frame.shape)
 
-            # Draw skeleton in gesture color
-            coords = to_pixels(hand_lms, frame.shape)
-            draw_hand(frame, coords, accent_color)
-
-            # Draw gesture label near wrist
-            handedness = result.handedness[idx][0].display_name
-            display    = f"{label_text}  {confidence:.0%}"
-            draw_label_box(frame, display, accent_color, coords, idx)
-
-    # Legend + FPS
-    draw_legend(frame)
+        draw_hand(frame, coords, color)
+        draw_label(frame, f"{label} {confidence:.0%}", color, coords)
+        handle_gesture_action(gesture, coords, frame.shape)
 
     now = time.time()
-    frame_time = now - prev_time
+    fps_buffer.append(1 / (now - prev_time + 1e-9))
     prev_time = now
+    fps = int(sum(fps_buffer) / len(fps_buffer))
 
-    instant_fps = 1.0 / (frame_time + 1e-9)
-    fps_buffer.append(instant_fps)
-
-    stable_fps = sum(fps_buffer) / len(fps_buffer)
-
-    cv2.putText(frame, f"FPS: {int(stable_fps)}", (10, 40),
+    cv2.putText(frame, f"FPS: {fps}", (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
 
-    cv2.imshow("MediaPipe Gesture Recognizer", frame)
+    cv2.imshow("Gesture PC Control", frame)
     if cv2.waitKey(1) & 0xFF == 27:
         break
 
